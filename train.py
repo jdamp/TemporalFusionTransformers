@@ -13,32 +13,18 @@ import temporal_fusion_transformers as tft
 from model_autoreg import fit_ar_model
 from model_tft import build_tft, get_train_val_data, get_default_callbacks
 import plot
-
+import optuna
+from hyperparam import objective, champion_callback
 import mlflow_utils
 
 
 def main():
-    d_model = 256
-    dropout_rate = 0.2
-    learning_rate = 0.005
-    epochs = 50
-    n_samples = 1000
+    experiment_id = mlflow_utils.get_or_create_experiment("TFT")
     start_date_train = pd.Timestamp("1980-01-01")
     end_date_train = pd.Timestamp("2018-01-01")
-
-    train_data, val_data = get_train_val_data(
-        n_samples=n_samples,
-        n_samples_val=int(0.1 * n_samples),
-        df_daily_input=tft.df_input_scl,
-        df_target=tft.df_target_1m_pct,
-        start_date_train=start_date_train,
-        end_date_train=end_date_train,
-        start_date_val=pd.Timestamp("2018-01-01"),
-        end_date_val=pd.Timestamp("2020-01-01"),
-        batch_size=64,
-    )
-
-    experiment_id = mlflow_utils.get_or_create_experiment("TFT")
+    start_date_plot = pd.Timestamp("2000-01-01")
+    end_date_plot = pd.Timestamp("2023-01-01")
+    autoreg_models = {}
     with mlflow.start_run(run_name="Parent run", experiment_id=experiment_id) as run:
         for country in tft.countries:
             with mlflow.start_run(
@@ -47,37 +33,46 @@ def main():
                 experiment_id=experiment_id,
             ):
                 autoreg_data = tft.df_target_1m_pct
-                autoreg_model = fit_ar_model(
+                autoreg_models[country] = fit_ar_model(
                     autoreg_data, country, start_date_train, end_date_train, lags=12
                 )
-        for mode in ["full"]:
-            with mlflow.start_run(
-                nested="True", run_name=f"TFT_{mode}", experiment_id=experiment_id
-            ) as tft_run:
-                skip_attn = mode == "partial"
-                tft_model = build_tft(
-                    d_model=d_model,
-                    dropout_rate=dropout_rate,
-                    learning_rate=learning_rate,
-                    partial=skip_attn,
-                )
-                callbacks = get_default_callbacks(tft_run)
+        # TFT hyperparameter tuning runs
+        study = optuna.create_study(direction="minimize")
+        study.optimize(objective, n_trials=5, callbacks=[champion_callback])
+        mlflow.log_params(study.best_params)
+        mlflow.log_metric("best_val_loss", study.best_value)
 
-                hist = tft_model.fit(
-                    train_data,
-                    validation_data=val_data,
-                    callbacks=callbacks,
-                    epochs=epochs,
-                )
-                params = {
-                    "d_model": d_model,
-                    "dropout_rate": dropout_rate,
-                    "learning_rate": learning_rate,
-                }
-                # Log to MLflow
-                mlflow.log_params(params)
+        # Get best model
+        # Retrieve all runs matching the query
+        # Initialize variables to track the minimum RMSE and corresponding run
+        min_error = float("inf")
+        best_run_id = None
 
-                mlflow_utils.log_keras_model(tft_model, "model")
+        runs = mlflow.MlflowClient().search_runs(
+            experiment_ids=experiment_id,
+            filter_string=f"tags.mlflow.parentRunId = '{run.info.run_id}'",
+        )
+        for run in runs:
+            # Skip Autoreg runs
+            if "Autoreg" in run.info.run_name:
+                continue
+            error = run.data.metrics["mean_val_loss"]
+            if error < min_error:
+                min_error = error
+                best_run_id = run.info.run_id
+        model_path = f"runs:/{best_run_id}/model"
+        best_tft_model = mlflow_utils.load_keras_model(model_path)
+        for n_months_ahead in [1, 2, 6, 12]:
+            for country in tft.countries:
+                plot.yoy_plot(
+                    best_tft_model,
+                    autoreg_models[f"Autoreg_{country}"],
+                    start_date_plot,
+                    end_date_plot,
+                    country,
+                    n_months_ahead,
+                    True,
+                )
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ def build_tft(
     d_model: int,
     dropout_rate: float,
     learning_rate: float,
+    n_head: int,
     partial: bool
 ) ->tft.TFT:
     """_summary_
@@ -30,9 +31,9 @@ def build_tft(
         dropout_rate=dropout_rate,
         quantiles=tft.quantiles,
         name="tft",
-        skip_attention=partial
+        skip_attention=partial,
+        n_head=n_head
     )
-
     optimizer = keras.optimizers.Adam(learning_rate=learning_rate)
     model.compile(optimizer=optimizer, loss=tft.quantile_loss)
     return model
@@ -74,6 +75,7 @@ def get_train_val_data(
     start_date_val: pd.Timestamp,
     end_date_val: pd.Timestamp,
     batch_size: int,
+    **kwargs,
 ) -> tuple[DataLoader, DataLoader]:
     """_summary_
 
@@ -88,6 +90,7 @@ def get_train_val_data(
         end_date_val (pd.Timestamp): _description_
         batch_size (int): _description_
 
+
     Returns:
         tuple[DataLoader, DataLoader]: _description_
     """
@@ -98,6 +101,7 @@ def get_train_val_data(
             df_target=df_target,
             start_date=start_date_train,
             end_date=end_date_train,
+            **kwargs
         ),
         batch_size=batch_size,
         shuffle=True,

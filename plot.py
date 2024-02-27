@@ -93,6 +93,21 @@ def build_n_months_prediction_df(
     return pd.DataFrame(index=res["index"], data=res["data"])
 
 
+def build_monthly_prediction_df(
+        tft_model: keras.Model,
+        start_date: pd.Timestamp,
+        end_date: pd.Timestamp,
+        country: str
+    ):
+    x = create_predicition_sample(start_date=start_date, end_date=end_date, country=country)
+    predictions = tft_model.predict(x)
+    pred_df = pd.DataFrame(
+        data = predictions[:,0,:],
+        columns=[f"quantile_{q:.2f}" for q in tft.quantiles],
+        index=create_monthly_index(start_date, len(predictions)),
+    )
+    return pred_df
+
 def yoy_plot(
     tft_model: keras.Model,
     ar_model: AutoReg,
