@@ -1,6 +1,6 @@
 import re
 
-from datetime import datetime
+
 from statsmodels.tsa.ar_model import AutoReg
 
 import keras
@@ -8,41 +8,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+import prediction.transform as trf
+
 import temporal_fusion_transformers as tft
-
-
-def create_predicition_sample(start_date, end_date, country):
-    X_cont_hist = []
-    X_cat_hist = []
-    X_fut = []
-    X_cat_stat = []
-    for month in loop_over_month_starts(start_date, end_date):
-        x, _ = tft.sample_nowcasting_data(
-            df_daily_input=tft.df_input_scl,
-            df_target=tft.df_target_1m_pct,
-            sampled_day=month,
-            min_context=365,
-            context_length=365,
-            country=country,
-            skip_y=True,
-        )
-        [indiv_cont_hist, indiv_cat_hist, indiv_fut, indiv_cat_stat] = x
-        X_cont_hist.append(indiv_cont_hist)
-        X_cat_hist.append(indiv_cat_hist)
-        X_fut.append(indiv_fut)
-        X_cat_stat.append(indiv_cat_stat)
-
-    X_cont_hist = keras.ops.stack(X_cont_hist, axis=0)
-    X_cat_hist = keras.ops.stack(X_cat_hist, axis=0)
-    X_fut = keras.ops.stack(X_fut, axis=0)
-    X_cat_stat = keras.ops.stack(X_cat_stat, axis=0)
-    X = [X_cont_hist, X_cat_hist, X_fut, X_cat_stat]
-    return X
 
 
 def predictions(model, country, start_date, end_date):
     """Create an array of predictions"""
-    X = create_predicition_sample(start_date, end_date, country)
+    X = trf.create_predicition_sample(start_date, end_date, country)
     # Prediction shape: n_samples, months, quantiles
     y_pred = model.predict(X)
     return y_pred
@@ -53,14 +26,14 @@ def generate_ar_forecast(ar_model, country, start_date: str, end_date: str, n_mo
     df_target = tft.df_target_1m_pct
 
     ar_predictions = []
-    for month in loop_over_month_starts(start_date, end_date):
+    for month in trf.loop_over_month_starts(start_date, end_date):
         # Get index of current target month and fit model
         idx = df_target.index.get_loc(month)
         prediction = ar_model.predict(month, month + pd.DateOffset(months=n_months_ahead))
         # Join this with the 12 - n_months_ahead previous months of truth
         prev_months_truth = df_target[idx - (12 - n_months_ahead) : idx][country]
         all_months = pd.concat((prev_months_truth, prediction))
-        x = yoy_rolling(all_months)
+        x = trf.yoy_rolling(all_months)
         ar_predictions.append((month, x.iloc[-1]))
     return pd.DataFrame(ar_predictions).set_index(0).rename(columns={1: "prediction AR"})
 
@@ -72,11 +45,11 @@ def build_n_months_prediction_df(
     y_pred = predictions(model, country, start_date, end_date)
     # Select only the n months ahead from the prediction (and the first and only batch)
     y_pred_ahead = y_pred[:, :n_months_ahead, :]
-    for imonth, month in enumerate(loop_over_month_starts(start_date, end_date)):
+    for imonth, month in enumerate(trf.loop_over_month_starts(start_date, end_date)):
         pred_df = pd.DataFrame(
             data=y_pred_ahead[imonth],
             columns=[f"quantile_{q:.2f}" for q in tft.quantiles],
-            index=create_monthly_index(month, n_months_ahead),
+            index=trf.create_monthly_index(month, n_months_ahead),
         )
         # Join this with the 12 - n_months_ahead previous months of truth
         start_idx = tft.df_target_1m_pct.index.get_loc(month)
@@ -88,7 +61,7 @@ def build_n_months_prediction_df(
         for q in tft.quantiles:
             df[f"quantile_{q:.2f}"].fillna(df["inflation"], axis=0, inplace=True)
         df["inflation"].fillna(df["quantile_0.50"], inplace=True)
-        df_roll = yoy_rolling(df)
+        df_roll = trf.yoy_rolling(df)
         # inflation prediction for this month is the last row
         res["index"].append(month)
         res["data"].append(df_roll.iloc[-1])
@@ -96,19 +69,17 @@ def build_n_months_prediction_df(
 
 
 def build_monthly_prediction_df(
-        tft_model: keras.Model,
-        start_date: pd.Timestamp,
-        end_date: pd.Timestamp,
-        country: str
-    ):
-    x = create_predicition_sample(start_date=start_date, end_date=end_date, country=country)
+    tft_model: keras.Model, start_date: pd.Timestamp, end_date: pd.Timestamp, country: str
+):
+    x = trf.create_predicition_sample(start_date=start_date, end_date=end_date, country=country)
     predictions = tft_model.predict(x)
     pred_df = pd.DataFrame(
-        data = predictions[:,0,:],
+        data=predictions[:, 0, :],
         columns=[f"quantile_{q:.2f}" for q in tft.quantiles],
-        index=create_monthly_index(start_date, len(predictions)),
+        index=trf.create_monthly_index(start_date, len(predictions)),
     )
     return pred_df
+
 
 def yoy_plot(
     tft_model: keras.Model,
@@ -233,76 +204,3 @@ def plot_yoy_change(model, country, target_date, ax=None):
     ax.set(ylabel="Year-on-Year inflation change [%]", title="US Inflation example")
     ax.axvline(x=target_date - pd.DateOffset(months=1), color="gray", ls="--")
     return fig
-
-
-def loop_over_month_starts(start_date: str, end_date: str) -> list[pd.Timestamp]:
-    """
-    Generate a list of all monthly start dates between two date strings.
-
-    Args:
-    start_date (str): The start date in 'YYYY-MM-DD' format.
-    end_date (str): The end date in 'YYYY-MM-DD' format.
-
-    Returns:
-    list[pd.Timestamp]: A list of monthly start dates.
-    """
-    monthly_starts = pd.date_range(start=start_date, end=end_date, freq="MS")
-    return [pd.Timestamp(date) for date in monthly_starts]
-
-
-def create_monthly_index(start_date: str, n: int) -> pd.DatetimeIndex:
-    """
-    Creates a Pandas DatetimeIndex starting from a given date with n monthly starts.
-
-    Args:
-    start_date (str): The start date in 'YYYY-MM-DD' format, expected to be the first of a month.
-    n (int): The number of months to include in the index.
-
-    Returns:
-    pd.DatetimeIndex: A DatetimeIndex with n monthly starts beginning from start_date.
-    """
-    start = pd.to_datetime(start_date)
-    end = start + pd.DateOffset(months=n - 1)
-    return pd.date_range(start=start, end=end, freq="MS")
-
-
-def yoy_rolling(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Calculate year-over-year (YoY) rolling growth rates from monthly percentage growth rates in a DataFrame,
-     calculated as a 12-month rolling product of the input monthly growth rates.
-
-    Args:
-        df (pd.DataFrame): A DataFrame with columns representing monthly percentage growth rates.
-
-    Returns:
-        pd.DataFrame: A DataFrame with columns representing YoY percentage growth rates,
-    """
-    # convert percentages into growth factors (0% -> 1, 5% -> 1.05, ...)
-    monthly_growths = df / 100.0 + 1
-    yoy_growths = monthly_growths.rolling(window=12).apply(np.prod, raw=True)
-    # convert back to percentages
-    return (yoy_growths - 1) * 100
-
-
-def transform_rmse_box_plot(run_df: pd.DataFrame) -> pd.DataFrame:
-    """Restructures the DataFrame so that it's in a long format, suitable for creating box plots
-    of the n-month-ahead RMSE.
-    It extracts the number of months and country codes from the column names.
-
-    Args:
-        run_df (pd.DataFrame): DataFrame with run information on mlflow
-
-    Returns:
-        pd.DataFrame: DataFrame with Country, "Months Ahead" and "RMSE" column
-    """
-
-    data = []
-    for column in run_df.columns:
-        match = re.match(r"metrics\.rmse_yoy_([A-Z]{2})_(\d+)_months_ahead", column)
-        if match:
-            country_code, months_ahead = match.groups()
-            for value in run_df[column]:
-                data.append(
-                    {"Country": country_code, "Months Ahead": int(months_ahead), "RMSE": value}
-                )
-    long_df = pd.DataFrame(data)

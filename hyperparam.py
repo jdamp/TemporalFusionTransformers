@@ -10,7 +10,7 @@ from model_tft import build_tft, get_train_val_data, get_default_callbacks
 
 
 def objective(trial: optuna.Trial):
-    n_samples = 1000
+    n_samples = 500
     experiment_id = mlflow_utils.get_or_create_experiment("TFT")
     start_date_train = pd.Timestamp("1980-01-01")
     end_date_train = pd.Timestamp("2018-01-01")

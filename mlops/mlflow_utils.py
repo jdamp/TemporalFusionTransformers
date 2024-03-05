@@ -2,11 +2,58 @@ import keras
 import mlflow
 import pandas as pd
 
+from functools import wraps
 from keras.models import Model
 from mlflow import pyfunc
-from typing import Optional
+from typing import Callable, Optional
 
 import temporal_fusion_transformers as tft
+
+
+def get_or_create_experiment(experiment_name: str) -> str:
+    """
+    Retrieve the ID of an existing MLflow experiment or create a new one if it doesn't exist.
+
+    This function checks if an experiment with the given name exists within MLflow.
+    If it does, the function returns its ID. If not, it creates a new experiment
+    with the provided name and returns its ID.
+
+    Parameters:
+    - experiment_name (str): Name of the MLflow experiment.
+
+    Returns:
+    - str: ID of the existing or newly created MLflow experiment.
+    """
+
+    if experiment := mlflow.get_experiment_by_name(experiment_name):
+        return experiment.experiment_id
+    else:
+        return mlflow.create_experiment(experiment_name)
+
+
+def ensure_tft_experiment(func: Callable) -> Callable:
+    """A decorator to ensure that the 'experiment_id' argument is set for the decorated function.
+
+    If 'experiment_id' is None when the decorated function is called, 'experiment_id' will be
+    set using the TFT experiment id.
+
+    Args:
+        func (Callable): The function to be decorated.
+
+    Returns:
+        Callable: The wrapper function that adds the 'experiment_id' handling logic.
+    """
+
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        if "experiment_id" in kwargs and kwargs["experiment_id"] is None:
+            kwargs["experiment_id"] = get_or_create_experiment("TFT")
+        elif 'experiment_id' not in kwargs:
+            # If 'experiment_id' is not provided at all, set it
+            kwargs['experiment_id'] = get_or_create_experiment("TFT")
+        return func(*args, **kwargs)
+
+    return wrapper
 
 
 class KerasModelWrapper(pyfunc.PythonModel):
@@ -64,6 +111,19 @@ def load_keras_model(model_uri: str) -> KerasModelWrapper:
     return loaded_model
 
 
+def load_keras_model_for_run(run_id: str) -> KerasModelWrapper:
+    """Loads the "model" artifact for the run specified by "run_id".
+
+    Args:
+        run_id (str): id of the run
+
+    Returns:
+        KerasModelWrapper: The lpaded model from the run
+    """
+    uri = f"runs:/{run_id}/model"
+    return load_keras_model(uri)
+
+
 def add_tag_to_active_run(key: str, value: str):
     """
     Add a tag to the active MLflow run.
@@ -80,27 +140,7 @@ def add_tag_to_active_run(key: str, value: str):
     client.set_tag(run_id, key, value)
 
 
-def get_or_create_experiment(experiment_name: str) -> str:
-    """
-    Retrieve the ID of an existing MLflow experiment or create a new one if it doesn't exist.
-
-    This function checks if an experiment with the given name exists within MLflow.
-    If it does, the function returns its ID. If not, it creates a new experiment
-    with the provided name and returns its ID.
-
-    Parameters:
-    - experiment_name (str): Name of the MLflow experiment.
-
-    Returns:
-    - str: ID of the existing or newly created MLflow experiment.
-    """
-
-    if experiment := mlflow.get_experiment_by_name(experiment_name):
-        return experiment.experiment_id
-    else:
-        return mlflow.create_experiment(experiment_name)
-
-
+@ensure_tft_experiment
 def get_most_recent_parent_run_id(experiment_id: Optional[str] = None) -> str:
     """Retrieves the run ID of the most recent parent run in the specified experiment from mlflow.
 
@@ -110,8 +150,6 @@ def get_most_recent_parent_run_id(experiment_id: Optional[str] = None) -> str:
     Returns:
         The ID of the most recent parent run
     """
-    if experiment_id is None:
-        experiment_id = get_or_create_experiment("TFT")
     parent_id = mlflow.search_runs(
         experiment_ids=experiment_id,
         order_by=["created DESC"],
@@ -121,6 +159,7 @@ def get_most_recent_parent_run_id(experiment_id: Optional[str] = None) -> str:
     return parent_id
 
 
+@ensure_tft_experiment
 def get_child_run_df(parent_run_id: str, experiment_id: Optional[str] = None) -> pd.DataFrame:
     """Retrieves a DataFrame containing information on run info, metrics and parameters for all
     child runs of a given parent run.
@@ -132,9 +171,16 @@ def get_child_run_df(parent_run_id: str, experiment_id: Optional[str] = None) ->
     Returns:
         A DataFrame containing information from mlflow for the child runs
     """
-    if experiment_id is None:
-        experiment_id = get_or_create_experiment("TFT")
     runs = mlflow.search_runs(
         experiment_id, filter_string=f"tags.mlflow.parentRunId = '{parent_run_id}'"
     )
     return runs
+
+
+@ensure_tft_experiment
+def get_best_model(
+    parent_run_id: str, experiment_id: Optional[str] = None, metric: str = "metrics.mean_val_loss"
+) -> KerasModelWrapper:
+    child_runs = get_child_run_df(parent_run_id, experiment_id=experiment_id)
+    best_run_id = child_runs.sort_values(by=metric, ascending=True).iloc[0]["run_id"]
+    return load_keras_model_for_run(best_run_id)
