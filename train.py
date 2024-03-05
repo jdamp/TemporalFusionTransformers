@@ -38,7 +38,7 @@ def main():
                 )
         # TFT hyperparameter tuning runs
         study = optuna.create_study(direction="minimize")
-        study.optimize(objective, n_trials=5, callbacks=[champion_callback])
+        study.optimize(objective, n_trials=50, callbacks=[champion_callback])
         mlflow.log_params(study.best_params)
         mlflow.log_metric("best_val_loss", study.best_value)
 
@@ -66,7 +66,7 @@ def main():
             for country in tft.countries:
                 plot.yoy_plot(
                     best_tft_model,
-                    autoreg_models[f"Autoreg_{country}"],
+                    autoreg_models[country],
                     start_date_plot,
                     end_date_plot,
                     country,
