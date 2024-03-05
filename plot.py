@@ -1,3 +1,5 @@
+import re
+
 from datetime import datetime
 from statsmodels.tsa.ar_model import AutoReg
 
@@ -280,3 +282,27 @@ def yoy_rolling(df: pd.DataFrame) -> pd.DataFrame:
     yoy_growths = monthly_growths.rolling(window=12).apply(np.prod, raw=True)
     # convert back to percentages
     return (yoy_growths - 1) * 100
+
+
+def transform_rmse_box_plot(run_df: pd.DataFrame) -> pd.DataFrame:
+    """Restructures the DataFrame so that it's in a long format, suitable for creating box plots
+    of the n-month-ahead RMSE.
+    It extracts the number of months and country codes from the column names.
+
+    Args:
+        run_df (pd.DataFrame): DataFrame with run information on mlflow
+
+    Returns:
+        pd.DataFrame: DataFrame with Country, "Months Ahead" and "RMSE" column
+    """
+
+    data = []
+    for column in run_df.columns:
+        match = re.match(r"metrics\.rmse_yoy_([A-Z]{2})_(\d+)_months_ahead", column)
+        if match:
+            country_code, months_ahead = match.groups()
+            for value in run_df[column]:
+                data.append(
+                    {"Country": country_code, "Months Ahead": int(months_ahead), "RMSE": value}
+                )
+    long_df = pd.DataFrame(data)
