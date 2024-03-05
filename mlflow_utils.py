@@ -1,7 +1,11 @@
 import keras
 import mlflow
+import pandas as pd
+
 from keras.models import Model
 from mlflow import pyfunc
+from typing import Optional
+
 import temporal_fusion_transformers as tft
 
 
@@ -95,3 +99,42 @@ def get_or_create_experiment(experiment_name: str) -> str:
         return experiment.experiment_id
     else:
         return mlflow.create_experiment(experiment_name)
+
+
+def get_most_recent_parent_run_id(experiment_id: Optional[str] = None) -> str:
+    """Retrieves the run ID of the most recent parent run in the specified experiment from mlflow.
+
+    Args:
+        experiment_id: ID of the experiment. If None, defaults to the TFT experiment.
+
+    Returns:
+        The ID of the most recent parent run
+    """
+    if experiment_id is None:
+        experiment_id = get_or_create_experiment("TFT")
+    parent_id = mlflow.search_runs(
+        experiment_ids=experiment_id,
+        order_by=["created DESC"],
+        filter_string="`Run Name`='Parent run'",
+        max_results=1,
+    ).run_id.values[0]
+    return parent_id
+
+
+def get_child_run_df(parent_run_id: str, experiment_id: Optional[str] = None) -> pd.DataFrame:
+    """Retrieves a DataFrame containing information on run info, metrics and parameters for all
+    child runs of a given parent run.
+
+    Args:
+        parent_run_id: The ID of the parent run
+        experiment_id: ID of the experiment. If None, defaults to the TFT experiment.
+
+    Returns:
+        A DataFrame containing information from mlflow for the child runs
+    """
+    if experiment_id is None:
+        experiment_id = get_or_create_experiment("TFT")
+    runs = mlflow.search_runs(
+        experiment_id, filter_string=f"tags.mlflow.parentRunId = '{parent_run_id}'"
+    )
+    return runs
