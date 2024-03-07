@@ -1,10 +1,15 @@
 import keras
 import mlflow
-import mlflow_utils
+import mlops.mlflow_utils as mlflow_utils
 import numpy as np
 import optuna
 import pandas as pd
-from plot import build_n_months_prediction_df, build_monthly_prediction_df, predictions, loop_over_month_starts
+from prediction.plot import (
+    build_n_months_prediction_df,
+    build_monthly_prediction_df,
+    predictions,
+    loop_over_month_starts,
+)
 import temporal_fusion_transformers as tft
 from model_tft import build_tft, get_train_val_data, get_default_callbacks
 
@@ -23,9 +28,9 @@ def objective(trial: optuna.Trial):
     with mlflow.start_run(nested=True, experiment_id=experiment_id) as tft_run:
 
         # Define hyperparameters
-        min_context = 90#trial.suggest_int("min_context", 30, 120)
+        min_context = 90  # trial.suggest_int("min_context", 30, 120)
         # Context length needs to be at least min_context
-        context_length = 365#trial.suggest_int("context_length", min_context, 365)
+        context_length = 365  # trial.suggest_int("context_length", min_context, 365)
 
         params = {
             "d_model": trial.suggest_int("d_model", 8, 128),
@@ -94,9 +99,7 @@ def objective(trial: optuna.Trial):
                     n_months_ahead=n_months_ahead,
                 )
 
-                mlflow.log_metric(
-                    f"rmse_yoy_{country}_{n_months_ahead}_months_ahead", rmse_yoy
-                )
+                mlflow.log_metric(f"rmse_yoy_{country}_{n_months_ahead}_months_ahead", rmse_yoy)
 
         # Metric: mean val loss over all countries
         errors = []
@@ -115,7 +118,7 @@ def objective(trial: optuna.Trial):
                 y_pred = keras.ops.array(tft_model.predict(X))
                 errors.append(tft.quantile_loss(y, y_pred).cpu())
         error = np.mean(errors)
-        
+
         mlflow.log_metric("mean_val_loss", error)
 
         # Log parameters to MLflow
@@ -140,17 +143,13 @@ def champion_callback(study: optuna.Study, frozen_trial: optuna.Trial):
     if study.best_value and winner != study.best_value:
         study.set_user_attr("winner", study.best_value)
         if winner:
-            improvement_percent = (
-                abs(winner - study.best_value) / study.best_value
-            ) * 100
+            improvement_percent = (abs(winner - study.best_value) / study.best_value) * 100
             print(
                 f"Trial {frozen_trial.number} achieved value: {frozen_trial.value} with "
                 f"{improvement_percent: .4f}% improvement"
             )
         else:
-            print(
-                f"Initial trial {frozen_trial.number} achieved value: {frozen_trial.value}"
-            )
+            print(f"Initial trial {frozen_trial.number} achieved value: {frozen_trial.value}")
 
 
 def rmse(truth, prediction):
@@ -167,7 +166,7 @@ def get_rmse_yoy(
     truths = tft.df_target_12m_pct.loc[start_date:end_date, country]
     predictions = build_n_months_prediction_df(
         model, n_months_ahead, country, start_date, end_date
-    ).loc[:,"quantile_0.50"]
+    ).loc[:, "quantile_0.50"]
     return rmse(truths, predictions)
 
 
@@ -178,5 +177,7 @@ def get_rmse_mom(
     country,
 ):
     truths = tft.df_target_1m_pct.loc[start_date:end_date, country]
-    predictions = build_monthly_prediction_df(model, start_date, end_date, country).loc[:,"quantile_0.50"]
+    predictions = build_monthly_prediction_df(model, start_date, end_date, country).loc[
+        :, "quantile_0.50"
+    ]
     return rmse(truths, predictions)

@@ -1,5 +1,6 @@
 import re
 
+from typing import Optional
 
 from statsmodels.tsa.ar_model import AutoReg
 
@@ -7,6 +8,8 @@ import keras
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 
 import prediction.transform as trf
 
@@ -35,11 +38,19 @@ def generate_ar_forecast(ar_model, country, start_date: str, end_date: str, n_mo
         all_months = pd.concat((prev_months_truth, prediction))
         x = trf.yoy_rolling(all_months)
         ar_predictions.append((month, x.iloc[-1]))
-    return pd.DataFrame(ar_predictions).set_index(0).rename(columns={1: "prediction AR"})
+    return (
+        pd.DataFrame(ar_predictions)
+        .set_index(0)
+        .rename(index={0: "date"}, columns={1: f"AutoReg_{country}_{n_months_ahead}"})
+    )
 
 
 def build_n_months_prediction_df(
-    model, n_months_ahead: int, country: str, start_date: str, end_date: str
+    model,
+    n_months_ahead: int,
+    country: str,
+    start_date: str,
+    end_date: str,
 ):
     res = {"index": [], "data": []}
     y_pred = predictions(model, country, start_date, end_date)
@@ -69,7 +80,10 @@ def build_n_months_prediction_df(
 
 
 def build_monthly_prediction_df(
-    tft_model: keras.Model, start_date: pd.Timestamp, end_date: pd.Timestamp, country: str
+    tft_model: keras.Model,
+    start_date: pd.Timestamp,
+    end_date: pd.Timestamp,
+    country: str,
 ):
     x = trf.create_predicition_sample(start_date=start_date, end_date=end_date, country=country)
     predictions = tft_model.predict(x)
@@ -203,4 +217,92 @@ def plot_yoy_change(model, country, target_date, ax=None):
     ax.legend()
     ax.set(ylabel="Year-on-Year inflation change [%]", title="US Inflation example")
     ax.axvline(x=target_date - pd.DateOffset(months=1), color="gray", ls="--")
+    return fig
+
+
+def plot_scatter_model_params(runs: pd.DataFrame, x: str, y: str, z: str, marker_size: int):
+    fig = px.scatter(runs, x=x, y=y, color=z, hover_data=["run_id"])
+
+
+def add_date_line(date: pd.Timestamp, label: str, fig: go.Figure):
+    fig.add_shape(
+        type="line",
+        x0=date,
+        y0=0,
+        x1=date,
+        y1=1,
+        xref="x",
+        yref="paper",
+        line=dict(color="gray", width=3, dash="dot"),
+    )
+    fig.add_annotation(
+        x=date,
+        y=1,
+        xref="x",
+        yref="paper",
+        text=label,
+        showarrow=False,
+        yshift=25,
+        font={"size": 12},
+    )
+
+
+def plot_prediction_benchmark(
+    df_benchmark: pd.DataFrame, country: str, n_month_ahead_vals: list[int]
+):
+    hovertemplate = "Model: %{meta}<br>Inflation: %{y:.3f}%<extra></extra>"
+    colors = ["#1f77b4", "#d62728", "#2ca02c"]
+
+    fig = go.Figure()
+    for i, n_months_ahead in enumerate(n_month_ahead_vals):
+        name_ar = f"{n_months_ahead} months ahead, AutoReg"
+
+        fig.add_trace(
+            go.Scatter(
+                x=df_benchmark.index,
+                y=df_benchmark[f"AutoReg_{country}_{n_months_ahead}"],
+                mode="lines",
+                name=name_ar,
+                meta=name_ar,
+                hovertemplate=hovertemplate,
+                line=dict(color=colors[i], dash="dash"),
+            )
+        )
+
+        name_tft = f"{n_months_ahead} months ahead, TFT"
+        fig.add_trace(
+            go.Scatter(
+                x=df_benchmark.index,
+                y=df_benchmark[f"quantile_0.50_{country}_{n_months_ahead}"],
+                mode="lines",
+                name=name_tft,
+                meta=name_tft,
+                hovertemplate=hovertemplate,
+                line=dict(color=colors[i]),
+            )
+        )
+    fig.add_trace(
+        go.Scatter(
+            x=df_benchmark.index,
+            y=df_benchmark[f"truth_{country}"],
+            mode="lines",
+            name="truth",
+            meta="truth",
+            hovertemplate=hovertemplate,
+            line=dict(color="#111111"),
+        )
+    )
+
+    # TODO: I can be retrieved from mlflow!
+    add_date_line("2018-01-01", "Training cutoff", fig)
+    add_date_line("2020-01-01", "Validation cutoff", fig)
+
+    fig.update_layout(
+        width=1500,
+        height=500,
+        hovermode="x unified",
+        title=f"YoY inflation predictions for {country}",
+        xaxis_title="Date",
+        yaxis_title="YoY inflation [%]",
+    )
     return fig

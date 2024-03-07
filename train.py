@@ -12,10 +12,10 @@ import temporal_fusion_transformers as tft
 
 from model_autoreg import fit_ar_model
 from model_tft import build_tft, get_train_val_data, get_default_callbacks
-import plot
+import prediction.plot as plot
 import optuna
 from hyperparam import objective, champion_callback
-import mlflow_utils
+import mlops.mlflow_utils as mlflow_utils
 
 
 def main():
@@ -24,6 +24,7 @@ def main():
     end_date_train = pd.Timestamp("2018-01-01")
     start_date_plot = pd.Timestamp("2000-01-01")
     end_date_plot = pd.Timestamp("2023-01-01")
+    
     autoreg_models = {}
     with mlflow.start_run(run_name="Parent run", experiment_id=experiment_id) as run:
         for country in tft.countries:
@@ -40,6 +41,8 @@ def main():
         study = optuna.create_study(direction="minimize")
         study.optimize(objective, n_trials=50, callbacks=[champion_callback])
         mlflow.log_params(study.best_params)
+        mlflow.log_param("start_date_train", start_date_train)
+        mlflow.log_param("end_date_train", end_date_train)
         mlflow.log_metric("best_val_loss", study.best_value)
 
         # Get best model

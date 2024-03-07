@@ -1,5 +1,6 @@
 """Module containing data transformation functions used to build nowcasting predictions"""
 
+import re
 from typing import Generator
 
 import keras
@@ -7,16 +8,19 @@ import numpy as np
 import pandas as pd
 import torch
 
+from _utils.types import DateLike
 import temporal_fusion_transformers as tft
 
 
-def create_predicition_sample(start_date: str, end_date: str, country: str) -> list[torch.Tensor]:
+def create_predicition_sample(
+    start_date: DateLike, end_date: DateLike, country: str
+) -> list[torch.Tensor]:
     """Creates a sample that can be directly passed to the model to create predictions for
     a specific country between 'start_date' and 'end_date'.
 
     Args:
-        start_date (str): The start_date for the sample
-        end_date (str): The end date for the sample
+        start_date (DateLike): The start_date for the sample
+        end_date (DateLike): The end date for the sample
         country (str): The country for which the prediction will be performed
 
     Returns:
@@ -50,7 +54,7 @@ def create_predicition_sample(start_date: str, end_date: str, country: str) -> l
     return X
 
 
-def create_monthly_index(start_date: str, n: int) -> pd.DatetimeIndex:
+def create_monthly_index(start_date: DateLike, n: int) -> pd.DatetimeIndex:
     """
     Creates a Pandas DatetimeIndex starting from a given date with n monthly starts.
 
@@ -83,7 +87,9 @@ def yoy_rolling(df: pd.DataFrame) -> pd.DataFrame:
     return (yoy_growths - 1) * 100
 
 
-def loop_over_month_starts(start_date: str, end_date: str) -> Generator[pd.Timestamp, None, None]:
+def loop_over_month_starts(
+    start_date: DateLike, end_date: DateLike
+) -> Generator[pd.Timestamp, None, None]:
     """
     Generate all monthly start dates between two date strings.
 
