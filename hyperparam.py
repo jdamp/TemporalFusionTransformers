@@ -1,3 +1,7 @@
+from dataclasses import dataclass
+from functools import partial
+from typing import Literal, Union, Callable
+
 import keras
 import mlflow
 import mlops.mlflow_utils as mlflow_utils
@@ -6,50 +10,82 @@ import optuna
 import pandas as pd
 from prediction.plot import (
     build_n_months_prediction_df,
-    build_monthly_prediction_df,
-    predictions,
-    loop_over_month_starts,
+    build_monthly_prediction_df
 )
+from prediction.transform import loop_over_month_starts
+
+from _utils.types import DateLike
 import temporal_fusion_transformers as tft
 from model_tft import build_tft, get_train_val_data, get_default_callbacks
 
 
-def objective(trial: optuna.Trial):
-    n_samples = 500
+@dataclass
+class OptunaParamConfig:
+    """Dataclass containing all information required to configure a parameter of an Optuna trial"""
+    name: str
+    lower: Union[int, float]
+    upper: Union[int, float]
+    dtype: type
+    log: bool = False
+    
+
+def objective_builder(
+    n_samples: int,
+    batch_size: int,
+    start_date_train: DateLike,
+    end_date_train: DateLike,
+    start_date_val: DateLike,
+    end_date_val: DateLike,
+    max_epochs: int,
+    min_context: int,
+    context_length: int,
+    d_model: OptunaParamConfig,
+    dropout_rate: OptunaParamConfig,
+    n_head: OptunaParamConfig,
+    learning_rate: OptunaParamConfig,
+) -> optuna.Trial:  
+    return partial(
+        objective,
+        n_samples=n_samples,
+        batch_size=batch_size,
+        start_date_train=start_date_train,
+        end_date_train=end_date_train,
+        start_date_val=start_date_val,
+        end_date_val=end_date_val,
+        max_epochs=max_epochs,
+        min_context=min_context,
+        context_length=context_length,
+        d_model_range=d_model,
+        dropout_rate_range=dropout_rate,
+        n_head_range=n_head,
+        learning_rate_range=learning_rate,
+    )
+
+
+def objective(
+    trial: optuna.Trial,
+    **kwargs
+):
+
     experiment_id = mlflow_utils.get_or_create_experiment("TFT")
-    start_date_train = pd.Timestamp("1980-01-01")
-    end_date_train = pd.Timestamp("2018-01-01")
-    start_date_val = pd.Timestamp("2018-01-01")
-    end_date_val = pd.Timestamp("2020-01-01")
-    start_date_plot = pd.Timestamp("2000-01-01")
-    end_date_plot = pd.Timestamp("2023-12-01")
-    epochs = 50
 
     with mlflow.start_run(nested=True, experiment_id=experiment_id) as tft_run:
+        params = {}
+        for param, config in kwargs.items():
+            if isinstance(config, OptunaParamConfig):
+                if config.dtype == int:
+                    method = trial.suggest_int
+                else: 
+                    method = trial.suggest_float
+                params[param] = method(config.name, config.lower, config.upper, log=config.log)
+            else:
+                params[param] = config
 
-        # Define hyperparameters
-        min_context = 90  # trial.suggest_int("min_context", 30, 120)
-        # Context length needs to be at least min_context
-        context_length = 365  # trial.suggest_int("context_length", min_context, 365)
-
-        params = {
-            "d_model": trial.suggest_int("d_model", 8, 128),
-            "dropout_rate": trial.suggest_float("dropout_rate", 0, 0.2),
-            "n_head": trial.suggest_int("n_head", 1, 6),
-            "learning_rate": trial.suggest_float("learning_rate", 1e-4, 5e-1, log=True),
-            "min_context": min_context,
-            "context_length": context_length,
-            "start_date_train": start_date_train,
-            "end_date_train": end_date_train,
-            "start_date_val": start_date_val,
-            "end_date_val": end_date_val,
-            "n_samples": n_samples,
-        }
 
         # Retrieve data using hyperparameters
         train_data, val_data = get_train_val_data(
-            n_samples=n_samples,
-            n_samples_val=int(0.1 * n_samples),
+            n_samples=params["n_samples"],
+            n_samples_val=int(0.1 * params["n_samples"]),
             df_daily_input=tft.df_input_scl,
             df_target=tft.df_target_1m_pct,
             start_date_train=params["start_date_train"],

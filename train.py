@@ -14,17 +14,40 @@ from model_autoreg import fit_ar_model
 from model_tft import build_tft, get_train_val_data, get_default_callbacks
 import prediction.plot as plot
 import optuna
-from hyperparam import objective, champion_callback
+from hyperparam import objective_builder, champion_callback, OptunaParamConfig
 import mlops.mlflow_utils as mlflow_utils
 
 
 def main():
-    experiment_id = mlflow_utils.get_or_create_experiment("TFT")
+    experiment_id = mlflow_utils.get_or_create_experiment("jdamp-test")
+    n_models = 1
     start_date_train = pd.Timestamp("1980-01-01")
     end_date_train = pd.Timestamp("2018-01-01")
+    start_date_val = pd.Timestamp("2018-01-01")
+    end_date_val = pd.Timestamp("2020-01-01")
     start_date_plot = pd.Timestamp("2000-01-01")
     end_date_plot = pd.Timestamp("2023-01-01")
-    
+
+    # Define hyperparameters
+    min_context = 90  # trial.suggest_int("min_context", 30, 120)
+    # Context length needs to be at least min_context
+    context_length = 365  # trial.suggest_int("context_length", min_context, 365)
+
+    objective = objective_builder(
+        n_samples=10,
+        batch_size=2,
+        start_date_train=start_date_train,
+        end_date_train=end_date_train,
+        start_date_val=start_date_val,
+        end_date_val=end_date_val,
+        max_epochs=60,
+        min_context=min_context,
+        context_length=context_length,
+        d_model=OptunaParamConfig("d_model", 8, 128, int),
+        dropout_rate=OptunaParamConfig("dropout_rate", 0, 0.2, float),
+        n_head=OptunaParamConfig("n_head", 1, 6, int),
+        learning_rate=OptunaParamConfig("learning_rate", 1e-5, 5e-2, float),
+    )
     autoreg_models = {}
     with mlflow.start_run(run_name="Parent run", experiment_id=experiment_id) as run:
         for country in tft.countries:
@@ -37,9 +60,10 @@ def main():
                 autoreg_models[country] = fit_ar_model(
                     autoreg_data, country, start_date_train, end_date_train, lags=12
                 )
+
         # TFT hyperparameter tuning runs
         study = optuna.create_study(direction="minimize")
-        study.optimize(objective, n_trials=50, callbacks=[champion_callback])
+        study.optimize(objective, n_trials=n_models, callbacks=[champion_callback])
         mlflow.log_params(study.best_params)
         mlflow.log_param("start_date_train", start_date_train)
         mlflow.log_param("end_date_train", end_date_train)
