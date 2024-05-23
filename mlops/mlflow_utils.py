@@ -21,10 +21,10 @@ def get_or_create_experiment(experiment_name: str) -> str:
     with the provided name and returns its ID.
 
     Parameters:
-    - experiment_name (str): Name of the MLflow experiment.
+        experiment_name: Name of the MLflow experiment.
 
     Returns:
-    - str: ID of the existing or newly created MLflow experiment.
+        ID of the existing or newly created MLflow experiment.
     """
 
     if experiment := mlflow.get_experiment_by_name(experiment_name):
@@ -40,10 +40,10 @@ def ensure_tft_experiment(func: Callable) -> Callable:
     set using the TFT experiment id.
 
     Args:
-        func (Callable): The function to be decorated.
+        func: The function to be decorated.
 
     Returns:
-        Callable: The wrapper function that adds the 'experiment_id' handling logic.
+        The wrapper function that adds the 'experiment_id' handling logic.
     """
 
     @wraps(func)
@@ -59,7 +59,8 @@ def ensure_tft_experiment(func: Callable) -> Callable:
 
 
 class KerasModelWrapper(pyfunc.PythonModel):
-    """Wrapper class to store and load keras models in mflflow < 2.11"""
+    """Wrapper class to store and load keras models in mlflow versions that might not fully support
+    logging for new Keras3 models"""
 
     def __init__(self, model: Model):
         self.model = model
@@ -67,10 +68,11 @@ class KerasModelWrapper(pyfunc.PythonModel):
     def load_context(self, context):
         """Loads the model from the artifact path"""
         self.model = keras.models.load_model(context.artifacts["model"])
-        self._hack_build()
+        self._hack_build()  # Call the model once such that its layers are built
         self.model.load_weights(context.artifacts["weights"])
 
     def predict(self, context, model_input):
+        """Returns the model prediction"""
         return self.model.predict(model_input)
 
     def _hack_build(self):
@@ -139,7 +141,9 @@ def add_tag_to_active_run(key: str, value: str):
     value (str): The value of the tag.
     """
     if mlflow.active_run() is None:
-        raise RuntimeError("No active run. Ensure you are within an active run context.")
+        raise RuntimeError(
+            "No active run. Ensure you are within an active run context."
+        )
 
     run_id = mlflow.active_run().info.run_id
     client = mlflow.tracking.MlflowClient()
@@ -166,7 +170,9 @@ def get_most_recent_parent_run_id(experiment_id: Optional[str] = None) -> str:
 
 
 @ensure_tft_experiment
-def get_tft_child_run_df(parent_run_id: str, experiment_id: Optional[str] = None) -> pd.DataFrame:
+def get_tft_child_run_df(
+    parent_run_id: str, experiment_id: Optional[str] = None
+) -> pd.DataFrame:
     """Retrieves a DataFrame containing information on run info, metrics and parameters for all
     child runs of TFT models of a given parent run.
 
@@ -182,7 +188,8 @@ def get_tft_child_run_df(parent_run_id: str, experiment_id: Optional[str] = None
     )
     # We only want finished runs with metrics available and not the Autoregressive models
     runs = runs[
-        (runs.status == "FINISHED") & (~runs["tags.mlflow.runName"].str.contains("Autoreg"))
+        (runs.status == "FINISHED")
+        & (~runs["tags.mlflow.runName"].str.contains("Autoreg"))
     ]
     # Some of the columns will contain 'None' strings, for example some default metrics
     # Replace these by nan values and drop columns that only contain nan
@@ -247,7 +254,9 @@ def get_ar_model(
         ),
     )
     if not len(runs) == 1:
-        raise ValueError(f"Found zero or multiple runs for Autoreg_{country}! ({len(runs)=})")
+        raise ValueError(
+            f"Found zero or multiple runs for Autoreg_{country}! ({len(runs)=})"
+        )
     run_id = runs.iloc[0].run_id
     model = mlflow.statsmodels.load_model(f"runs:/{run_id}/model")
     return model
