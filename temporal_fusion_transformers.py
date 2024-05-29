@@ -65,7 +65,7 @@ from tqdm import tqdm
 
 #| warning: false
 
-df_all = pd.read_csv("../data/nowcast_dataset_complete_Jan-24-2024.csv")
+df_all = pd.read_csv(r"L:\MED\TRAN\2021_Nowcasting\data\dataset_new\nowcast_dataset_complete_Jan-24-2024.csv")
 df_all['index'] = pd.to_datetime(df_all['index'])
 
 

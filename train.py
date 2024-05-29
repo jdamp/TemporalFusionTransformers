@@ -1,25 +1,29 @@
 import os
 
+# pylint: disable=wrong-import-position
 os.environ["KERAS_BACKEND"] = "torch"
 os.environ["MLFLOW_TRACKING_URI"] = (
     "https://mlflow-server-med-jupyter-central-dev.apps.dev.ocp.bisinfo.org"
 )
-import keras
 import mlflow
-import numpy as np
 import pandas as pd
+import optuna
 import temporal_fusion_transformers as tft
 
 from model_autoreg import fit_ar_model
-from model_tft import build_tft, get_train_val_data, get_default_callbacks
-import prediction.plot as plot
-import optuna
-from hyperparam import objective_builder, champion_callback, OptunaParamConfig
-import mlops.mlflow_utils as mlflow_utils
+import nowcastml.prediction.plot as plot
+
+from nowcastml.train.hyperparam import (
+    objective_builder,
+    champion_callback,
+    OptunaParamConfig,
+)
+from nowcastml.mlops import get_or_create_experiment, load_keras_model
 
 
 def main():
-    experiment_id = mlflow_utils.get_or_create_experiment("jdamp-test")
+    """Main method for the TFT hyperparameter scan"""
+    experiment_id = get_or_create_experiment("jdamp-test")
     n_models = 1
     start_date_train = pd.Timestamp("1980-01-01")
     end_date_train = pd.Timestamp("2018-01-01")
@@ -88,7 +92,7 @@ def main():
                 min_error = error
                 best_run_id = run.info.run_id
         model_path = f"runs:/{best_run_id}/model"
-        best_tft_model = mlflow_utils.load_keras_model(model_path)
+        best_tft_model = load_keras_model(model_path)
         for n_months_ahead in [1, 2, 6, 12]:
             for country in tft.countries:
                 plot.yoy_plot(
