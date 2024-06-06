@@ -60,10 +60,30 @@ def _filter_data(
         columns = variables[freq] + ["country"]
         df_freq = df_input.loc[filter_freq, columns]
         df_out = set_country_index_prefix(df_freq)
+        if freq == "d":
+            df_out = _resample_to_daily(df_out)
         if drop_na:
             df_out.dropna(how="all", inplace=True)
         dfs[freq] = df_out
     return dfs
+
+
+def _resample_to_daily(df_business_daily: pd.DataFrame) -> pd.DataFrame:
+    """Resamples the daily data with business day frequency to a daily frequency
+
+    Args:
+        df_daily (pd.DataFrame): _description_
+
+    Returns:
+        pd.DataFrame: _description_
+    """
+    # Assert that our DataFrame actually has a business day frequency
+    days = df_business_daily.index
+    expected = pd.date_range(start=days.min(), end=days.max(), freq="B")
+    if not days.equals(expected):
+        raise ValueError("Input DataFrame differs from a business day frequency")
+    df_daily = df_business_daily.resample("D").ffill()
+    return df_daily
 
 
 def set_country_index_prefix(df: pd.DataFrame) -> pd.DataFrame:

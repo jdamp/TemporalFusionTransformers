@@ -1,9 +1,12 @@
-from dataclasses import dataclass
+from collections import defaultdict
 from dateutil.relativedelta import relativedelta
 import keras
 import numpy as np
 import pandas as pd
 from typing import Optional
+
+
+DATA_KEYS = ["X_cont_hist", "X_cat_hist", "X_cat_stat", "X_fut"]
 
 
 def sample_nowcasting_data(
@@ -40,15 +43,9 @@ def sample_nowcasting_data(
     for freq in dfs_input:
         dfs_hist[freq] = dfs_input[freq].loc[earliest_date:sampled_day]
 
+    # Pad with zeroes if less data than context_length available
+    # TODO: padding for monthly and quarterly data
     dfs_padded = pad_to_context_length(dfs_hist, context_length)
-
-    X_cont_hist = {}
-    X_cat_hist = {}
-    for freq, df_pad in dfs_padded.items():
-        # Pad with zeroes if less data than context_length available
-        # TODO: padding for monthly and quarterly data
-        X_cont_hist[freq] = df_pad[cont_cols[freq]].values
-        X_cat_hist[freq] = df_pad[cat_cols[freq]].values
 
     # create the future known data: month of the year
     # note: any other known future information of interest should be included here as well
@@ -66,14 +63,22 @@ def sample_nowcasting_data(
         pd.DataFrame(index=target_month).index, is_monthly=True
     ).values
 
+    sample = defaultdict(dict)
+    for freq, df_pad in dfs_padded.items():
+
+        sample[freq]["X_cont_hist"] = df_pad[cont_cols[freq]].values
+        sample[freq]["X_cat_hist"] = df_pad[cat_cols[freq]].values
+        sample[freq]["X_cat_stat"] = X_cat_stat
+        sample[freq]["X_fut"] = X_fut
+
     # For predictions at recent dates no labels for all future twelve months are available -
     # provide the option to skip creating the target variable in that case
     if skip_y:
-        return [X_cont_hist, X_cat_hist, X_fut, X_cat_stat], None
+        return sample, None
     # create the target variables
     y = df_target.loc[target_month, country_dec_dict[int(X_cat_stat[0])]].values
 
-    return [X_cont_hist, X_cat_hist, X_fut, X_cat_stat], y
+    return sample, y
 
 
 def sample_dates(
@@ -155,10 +160,10 @@ def pad_to_context_length(dfs: dict[str, pd.DataFrame], context_length: int):
         df_pad_daily.index = pd.date_range(
             end=df_daily.index.min() - pd.Timedelta(days=1),
             periods=(context_length - df_daily.shape[0]),
-            freq="D",
+            freq="B",  # our original data is actually business daily...
         )
         df_daily = pd.concat([df_pad_daily, df_daily])
-    # Resample the daily DataFrame to to get the new indices fro the lower frequencies
+    # Resample the daily DataFrame to to get the new indices for the lower frequencies
     monthly_index = df_daily.resample("MS").asfreq().index
     quarterly_index = df_daily.resample("QS").asfreq().index
 
