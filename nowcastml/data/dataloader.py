@@ -1,12 +1,94 @@
+"""Module containing utilities for loading multi-frequency TFT data"""
+
 from collections import defaultdict
-from dateutil.relativedelta import relativedelta
+from dataclasses import dataclass, field
+from typing import DefaultDict, Optional
+
 import keras
 import numpy as np
 import pandas as pd
-from typing import Optional
-
+from dateutil.relativedelta import relativedelta
+from torch import Tensor
 
 DATA_KEYS = ["X_cont_hist", "X_cat_hist", "X_cat_stat", "X_fut"]
+
+
+@dataclass
+class MultiFrequencySamples:
+    """Dataclass that encapsulates different categories of multi-frequency data for the TFT.
+
+    In the dictionary fields X_cont_hist and X_cat_hist, each key corresponds to a frequency.
+    The associated values are lists of Tensors, where each list entry corresponds to a single data
+    sample.
+
+    Attributes:
+        X_cont_hist: Continuous, historical data for multiple frequencies.
+        X_cat_hist: Categorical, historical data for multiple frequences.
+        X_fut: A list of tensors representing known future data.
+        X_cat_stat: A list of tensors representing categorical static data.
+    """
+
+    X_cont_hist: DefaultDict[str, list[Tensor]] = field(  # pylint: disable=invalid-name
+        default_factory=lambda: defaultdict(list)
+    )
+    X_cat_hist: DefaultDict[str, list[Tensor]] = field(  # pylint: disable=invalid-name
+
+        default_factory=lambda: defaultdict(list)
+    )
+    X_fut: list[Tensor] = field(default_factory=list)
+    X_cat_stat: list[Tensor] = field(default_factory=list)
+
+    def print(self):
+        for freq in self.X_cont_hist.keys():
+            print(f"Frequency: {freq}")
+            print(
+                f"X_cont_hist: num_samples={len(self.X_cont_hist[freq])}, "
+                f"num_features={self.X_cont_hist[freq][0].shape[1]}"
+            )
+            print(
+                f"X_cat_hist: num_samples={len(self.X_cat_hist[freq])}, "
+                f"num_features={self.X_cat_hist[freq][0].shape[1]}"
+            )
+        print(f"X_fut.shape  {self.X_fut[0].shape}")
+        print(f"X_cat_stat.shape: num_samples={len(self.X_cat_stat)}")
+
+    def concatenate(self, other: "MultiFrequencySamples") -> "MultiFrequencySamples":
+        # Concatenate list fields
+        new_X_fut = self.X_fut + other.X_fut
+        new_X_cat_stat = self.X_cat_stat + other.X_cat_stat
+
+        # Concatenate dictionary fields
+        new_X_cont_hist = defaultdict(list, self.X_cont_hist)
+        new_X_cat_hist = defaultdict(list, self.X_cat_hist)
+
+        for key, value in other.X_cont_hist.items():
+            new_X_cont_hist[key].extend(value)
+
+        for key, value in other.X_cat_hist.items():
+            new_X_cat_hist[key].extend(value)
+
+        return MultiFrequencySamples(
+            X_cont_hist=new_X_cont_hist,
+            X_cat_hist=new_X_cat_hist,
+            X_fut=new_X_fut,
+            X_cat_stat=new_X_cat_stat,
+        )
+
+    @classmethod
+    def concatenate_datasets(
+        cls, datasets: list["MultiFrequencySamples"]
+    ) -> "MultiFrequencySamples":
+        if not datasets:
+            return cls()
+
+        result = cls()
+        for dataset in datasets:
+            result = result.concatenate(dataset)
+        return result
+
+
+def concatenate(datasets: MultiFrequencySamples):
+    return MultiFrequencySamples.concatenate_datasets(datasets)
 
 
 def sample_nowcasting_data(
@@ -44,7 +126,6 @@ def sample_nowcasting_data(
         dfs_hist[freq] = dfs_input[freq].loc[earliest_date:sampled_day]
 
     # Pad with zeroes if less data than context_length available
-    # TODO: padding for monthly and quarterly data
     dfs_padded = pad_to_context_length(dfs_hist, context_length)
 
     # create the future known data: month of the year
@@ -63,20 +144,20 @@ def sample_nowcasting_data(
         pd.DataFrame(index=target_month).index, is_monthly=True
     ).values
 
-    sample = defaultdict(dict)
+    sample = MultiFrequencySamples()
     for freq, df_pad in dfs_padded.items():
+        sample.X_cont_hist[freq].append(Tensor(df_pad[cont_cols[freq]].values))
+        sample.X_cat_hist[freq].append(Tensor(df_pad[cat_cols[freq]].values))
 
-        sample[freq]["X_cont_hist"] = df_pad[cont_cols[freq]].values
-        sample[freq]["X_cat_hist"] = df_pad[cat_cols[freq]].values
-        sample[freq]["X_cat_stat"] = X_cat_stat
-        sample[freq]["X_fut"] = X_fut
+    sample.X_fut.append(Tensor(X_fut))
+    sample.X_cat_stat.append(Tensor(X_cat_stat))
 
     # For predictions at recent dates no labels for all future twelve months are available -
     # provide the option to skip creating the target variable in that case
     if skip_y:
         return sample, None
     # create the target variables
-    y = df_target.loc[target_month, country_dec_dict[int(X_cat_stat[0])]].values
+    y = Tensor(df_target.loc[target_month, country_dec_dict[int(X_cat_stat[0])]].values)
 
     return sample, y
 
