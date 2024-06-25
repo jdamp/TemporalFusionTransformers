@@ -5,10 +5,14 @@ from dataclasses import dataclass, field
 from typing import DefaultDict, Optional
 
 import keras
+import torch
+import torch.nn.functional as F
+
 import numpy as np
 import pandas as pd
 from dateutil.relativedelta import relativedelta
 from torch import Tensor
+from .utils import get_max_days_in_n_months, get_max_quarters_in_n_months
 
 DATA_KEYS = ["X_cont_hist", "X_cat_hist", "X_cat_stat", "X_fut"]
 
@@ -28,44 +32,36 @@ class MultiFrequencySamples:
         X_cat_stat: A list of tensors representing categorical static data.
     """
 
-    X_cont_hist: DefaultDict[str, list[Tensor]] = field(  # pylint: disable=invalid-name
-        default_factory=lambda: defaultdict(list)
-    )
-    X_cat_hist: DefaultDict[str, list[Tensor]] = field(  # pylint: disable=invalid-name
-
-        default_factory=lambda: defaultdict(list)
-    )
-    X_fut: list[Tensor] = field(default_factory=list)
-    X_cat_stat: list[Tensor] = field(default_factory=list)
+    X_cont_hist: dict[str, Tensor]
+    X_cat_hist: dict[str, Tensor]
+    X_fut: Tensor
+    X_cat_stat: Tensor
 
     def print(self):
-        for freq in self.X_cont_hist.keys():
+        for freq in self.X_cont_hist:
             print(f"Frequency: {freq}")
-            print(
-                f"X_cont_hist: num_samples={len(self.X_cont_hist[freq])}, "
-                f"num_features={self.X_cont_hist[freq][0].shape[1]}"
-            )
-            print(
-                f"X_cat_hist: num_samples={len(self.X_cat_hist[freq])}, "
-                f"num_features={self.X_cat_hist[freq][0].shape[1]}"
-            )
-        print(f"X_fut.shape  {self.X_fut[0].shape}")
-        print(f"X_cat_stat.shape: num_samples={len(self.X_cat_stat)}")
+            print(f"{self.X_cont_hist[freq].shape=}")
+            print(f"{self.X_cat_hist[freq].shape=}")
+        print(f"{self.X_fut.shape=}")
+        print(f"{self.X_cat_stat}")
 
     def concatenate(self, other: "MultiFrequencySamples") -> "MultiFrequencySamples":
         # Concatenate list fields
-        new_X_fut = self.X_fut + other.X_fut
-        new_X_cat_stat = self.X_cat_stat + other.X_cat_stat
+        new_X_fut = keras.ops.concatenate((self.X_fut, other.X_fut))
+        new_X_cat_stat = keras.ops.concatenate((self.X_cat_stat, other.X_cat_stat))
 
-        # Concatenate dictionary fields
-        new_X_cont_hist = defaultdict(list, self.X_cont_hist)
-        new_X_cat_hist = defaultdict(list, self.X_cat_hist)
+        new_X_cont_hist = {}
+        new_X_cat_hist = {}
 
-        for key, value in other.X_cont_hist.items():
-            new_X_cont_hist[key].extend(value)
+        for freq in self.X_cont_hist:
+            new_X_cont_hist[freq] = keras.ops.concatenate(
+                (self.X_cont_hist[freq], other.X_cont_hist[freq])
+            )
 
-        for key, value in other.X_cat_hist.items():
-            new_X_cat_hist[key].extend(value)
+        for freq in self.X_cat_hist:
+            new_X_cat_hist[freq] = keras.ops.concatenate(
+                (self.X_cat_hist[freq], other.X_cat_hist[freq])
+            )
 
         return MultiFrequencySamples(
             X_cont_hist=new_X_cont_hist,
@@ -79,10 +75,10 @@ class MultiFrequencySamples:
         cls, datasets: list["MultiFrequencySamples"]
     ) -> "MultiFrequencySamples":
         if not datasets:
-            return cls()
+            raise ValueError("Received empty list")
 
-        result = cls()
-        for dataset in datasets:
+        result = datasets[0]
+        for dataset in datasets[1:]:
             result = result.concatenate(dataset)
         return result
 
@@ -100,9 +96,9 @@ def sample_nowcasting_data(
     country_dec_dict: dict[int, str],
     cont_cols,
     cat_cols,
-    min_context: int = 90,  # minimum context length in number of daily observations
-    context_length: int = 365,  # context length in number of daily observations (leads to padding if not reached in sampling)
-    num_months: int = 12,  # number of months (1 is current month)
+    min_context: int = 3,  # minimum context length in number of monthly observations
+    context_length: int = 12,  # context length in number of monthly observations (leads to padding if not reached in sampling)
+    num_months: int = 12,  # number of months to nowcast(1 is current month)
     sampled_day: (
         None | str
     ) = None,  # None (default) randomly chooses a date; otherwise, YYYY-MM-DD date selected a date
@@ -123,6 +119,11 @@ def sample_nowcasting_data(
 
     dfs_hist = {}
     for freq in dfs_input:
+        # if freq == "m":
+        #    earliest_date = earliest_date.replace(day=1)
+        # if freq == "q":
+        #    earliest_date = earliest_date.to_period("Q").to_timestamp()
+
         dfs_hist[freq] = dfs_input[freq].loc[earliest_date:sampled_day]
 
     # Pad with zeroes if less data than context_length available
@@ -144,13 +145,20 @@ def sample_nowcasting_data(
         pd.DataFrame(index=target_month).index, is_monthly=True
     ).values
 
-    sample = MultiFrequencySamples()
+    X_cont_hist = {}
+    X_cat_hist = {}
     for freq, df_pad in dfs_padded.items():
-        sample.X_cont_hist[freq].append(Tensor(df_pad[cont_cols[freq]].values))
-        sample.X_cat_hist[freq].append(Tensor(df_pad[cat_cols[freq]].values))
+        X_cont_hist[freq] = keras.ops.expand_dims(
+            Tensor(df_pad[cont_cols[freq]].values), axis=0
+        )
+        X_cat_hist[freq] = keras.ops.expand_dims(
+            Tensor(df_pad[cat_cols[freq]].values), axis=0
+        )
 
-    sample.X_fut.append(Tensor(X_fut))
-    sample.X_cat_stat.append(Tensor(X_cat_stat))
+    X_fut = keras.ops.expand_dims(Tensor(X_fut), axis=0)
+    X_cat_stat = keras.ops.expand_dims(Tensor(X_cat_stat), axis=0)
+
+    sample = MultiFrequencySamples(X_cont_hist, X_cat_hist, X_fut, X_cat_stat)
 
     # For predictions at recent dates no labels for all future twelve months are available -
     # provide the option to skip creating the target variable in that case
@@ -159,14 +167,14 @@ def sample_nowcasting_data(
     # create the target variables
     y = Tensor(df_target.loc[target_month, country_dec_dict[int(X_cat_stat[0])]].values)
 
-    return sample, y
+    return sample, y, dfs_padded
 
 
 def sample_dates(
     df_daily_input: pd.DataFrame,
-    min_context: int = 90,
+    min_context_months: int = 3,
     num_months: int = 12,
-    context_length: int = 365,
+    context_length_months: int = 12,
     sampled_day: Optional[str] = None,
 ) -> tuple[pd.Timestamp, pd.Timestamp]:
     """Samples a date range for a TFT input data sample
@@ -187,13 +195,13 @@ def sample_dates(
     Returns:
         Start and end date timestamp of the sampling range
     """
-
     # first step: determine the valid dates for sampling
     # from the left, they should allow at least `context_length` up until the sampled date
     # from the right, they should allow enough room to retrieve all of the target inflation months
     # only the dates "in the middle" can be sampled
     all_dates = df_daily_input.index
-    earliest_poss_date = all_dates[min_context]
+    first_date = all_dates[0]
+    earliest_poss_date = first_date + relativedelta(months=min_context_months)
     delta_latest_month = num_months - 1
     latest_poss_date = (
         all_dates.max()
@@ -201,28 +209,28 @@ def sample_dates(
         + pd.offsets.MonthEnd(0)
     )
     dates_for_sampling = df_daily_input.loc[earliest_poss_date:latest_poss_date].index
-    # sample a random date, context length and country
+    ## sample a random date, context length and country
     if sampled_day is None:
         sampled_day = pd.to_datetime(np.random.choice(dates_for_sampling))
         sampled_context_length = (
-            np.random.randint(low=min_context, high=context_length)
-            if min_context < context_length
-            else context_length
+            np.random.randint(low=min_context_months, high=context_length_months)
+            if min_context_months < context_length_months
+            else context_length_months
         )
     else:
         # sampled_context_length is the longest possible since setting a date means the data
         # will not be used for training models but for prediction/evaluation
         sampled_day = pd.to_datetime(sampled_day)
-        sampled_context_length = context_length
+        sampled_context_length = context_length_months
 
-    earliest_date = sampled_day - relativedelta(days=sampled_context_length - 1)
+    earliest_date = sampled_day - relativedelta(months=sampled_context_length)
     return earliest_date, sampled_day
 
 
 def pad_to_context_length(dfs: dict[str, pd.DataFrame], context_length: int):
     """Pads daily, monthly, and quarterly DataFrames to ensure they meet a specified context length
 
-    Uses the padded daily DataFrame to generate the proper indices for monthly and quarterly padding.
+    Uses the monthly DataFrame to generate the proper indices for daily and quarterly padding.
 
     Args:
         dfs: Dictionary mapping frequency keys to DataFrames
@@ -231,37 +239,37 @@ def pad_to_context_length(dfs: dict[str, pd.DataFrame], context_length: int):
     Returns:
         The padded daily, monthly, and quarterly DataFrames.
     """
+    # Determine max number of days in any 'context_length windows
+    n_days = get_max_days_in_n_months(context_length)
     # Pad the daily frequency DataFrame
     df_daily = dfs["d"]
-    if df_daily.shape[0] < context_length:
+    last_day = df_daily.index[-1]
+    daily_index = pd.date_range(end=last_day, periods=n_days, freq="D")
+    if df_daily.shape[0] < n_days:
         df_pad_daily = pd.DataFrame(
-            np.zeros((context_length - df_daily.shape[0], df_daily.shape[1])),
+            np.zeros((n_days - df_daily.shape[0], df_daily.shape[1])),
             columns=df_daily.columns,
         )
-        df_pad_daily.index = pd.date_range(
-            end=df_daily.index.min() - pd.Timedelta(days=1),
-            periods=(context_length - df_daily.shape[0]),
-            freq="B",  # our original data is actually business daily...
-        )
+        df_pad_daily.index = daily_index[: len(df_pad_daily)]
         df_daily = pd.concat([df_pad_daily, df_daily])
-    # Resample the daily DataFrame to to get the new indices for the lower frequencies
-    monthly_index = df_daily.resample("MS").asfreq().index
-    quarterly_index = df_daily.resample("QS").asfreq().index
 
-    # Pad the monthly frequency DataFrame to match the dates in the monthly_index
+    # Monthly DataFrame
     df_monthly = dfs["m"]
-    if df_monthly.shape[0] < len(monthly_index):
+    last_month = df_monthly.index[-1]
+    monthly_index = pd.date_range(end=last_month, periods=context_length, freq="MS")
+    if df_monthly.shape[0] < context_length:
         df_pad_monthly = pd.DataFrame(
-            np.zeros((len(monthly_index) - df_monthly.shape[0], df_monthly.shape[1])),
+            np.zeros((context_length - df_monthly.shape[0], df_monthly.shape[1])),
             columns=df_monthly.columns,
         )
         df_pad_monthly.index = monthly_index[: len(df_pad_monthly)]
         df_monthly = pd.concat([df_pad_monthly, df_monthly])
-        df_monthly.index = monthly_index
 
     # Pad the quarterly frequency DataFrame to match the dates in the quarterly_index
+    n_quarters = get_max_quarters_in_n_months(context_length)
     df_quarterly = dfs["q"]
-    if df_quarterly.shape[0] < len(quarterly_index):
+    quarterly_index = pd.date_range(end=last_month, periods=n_quarters, freq="QS")
+    if df_quarterly.shape[0] < n_quarters:
         df_pad_quarterly = pd.DataFrame(
             np.zeros(
                 (len(quarterly_index) - df_quarterly.shape[0], df_quarterly.shape[1])
@@ -270,7 +278,7 @@ def pad_to_context_length(dfs: dict[str, pd.DataFrame], context_length: int):
         )
         df_pad_quarterly.index = quarterly_index[: len(df_pad_quarterly)]
         df_quarterly = pd.concat([df_pad_quarterly, df_quarterly])
-        df_quarterly.index = quarterly_index
+        # df_full_quarterly.index = quarterly_index
 
     return {"d": df_daily, "m": df_monthly, "q": df_quarterly}
 
@@ -294,3 +302,50 @@ def date_features(
                 "Month of Year": date_range.month,
             }
         )
+
+
+def pad_and_stack_tensors(tensor_list: list[torch.Tensor]) -> torch.Tensor:
+    """
+    Pads and stacks a list of 2D tensors with varying sizes in the first dimension.
+
+    This function finds the maximum size of the first dimension among all input tensors,
+    pads the smaller tensors with zeros at the beginning of the first dimension to match
+    this size, and then stacks all tensors into a single 3D tensor.
+
+    Args:
+        tensor_list: A list of 2D tensors to be padded and stacked.
+            All tensors must have the same size in the second dimension.
+
+    Returns:
+        torch.Tensor: A 3D tensor containing all input tensors stacked together after padding.
+            The shape will be (batch_size, max_months, num_features)
+
+    Raises:
+        ValueError: If the input list is empty or if the tensors have different sizes
+                    in the second dimension.
+
+    Example:
+        >>> t1 = torch.rand(3, 5)
+        >>> t2 = torch.rand(4, 5)
+        >>> result = pad_and_stack_tensors([t1, t2])
+        >>> print(result.shape)
+        torch.Size([2, 4, 5])
+    """
+    if not tensor_list:
+        raise ValueError("Input list is empty")
+
+    if any(tensor.dim() != 2 for tensor in tensor_list):
+        raise ValueError("All input tensors must be 2-dimensional")
+
+    second_dim = tensor_list[0].size(1)
+    if any(tensor.size(1) != second_dim for tensor in tensor_list):
+        raise ValueError(
+            "All input tensors must have the same size in the second dimension"
+        )
+
+    max_size = max(tensor.size(0) for tensor in tensor_list)
+
+    padded_tensors = [
+        F.pad(tensor, (0, 0, max_size - tensor.size(0), 0)) for tensor in tensor_list
+    ]
+    return torch.stack(padded_tensors)
