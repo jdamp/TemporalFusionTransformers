@@ -12,9 +12,34 @@ import numpy as np
 import pandas as pd
 from dateutil.relativedelta import relativedelta
 from torch import Tensor
+from torch.utils.data import Dataset
 from .utils import get_max_days_in_n_months, get_max_quarters_in_n_months
 
 DATA_KEYS = ["X_cont_hist", "X_cat_hist", "X_cat_stat", "X_fut"]
+
+
+class NowcastingData(Dataset):
+    def __init__(
+        self,
+        n_samples: int,
+        dfs_input: dict[str, pd.DataFrame],
+        df_target: pd.DataFrame,
+        **kwargs,
+    ):
+        self.n_samples = n_samples
+        self.dfs_input = dfs_input
+        self.df_target = df_target
+        self.kwargs = kwargs
+
+    def __len__(self):
+        return self.n_samples
+
+    def __getitem__(self, idx):
+        X, y, _ = sample_nowcasting_data(
+            dfs_input=self.dfs_input, df_target=self.df_target, **self.kwargs
+        )
+        # DataLoader wants dictionary instead of dataclass
+        return X.__dict__, y
 
 
 @dataclass
@@ -44,6 +69,14 @@ class MultiFrequencySamples:
             print(f"{self.X_cat_hist[freq].shape=}")
         print(f"{self.X_fut.shape=}")
         print(f"{self.X_cat_stat}")
+
+    def get_tensors(self, freq: str) -> list[Tensor]:
+        return [
+            self.X_cont_hist[freq],
+            self.X_cat_hist[freq],
+            self.X_fut,
+            self.X_cat_stat,
+        ]
 
     def concatenate(self, other: "MultiFrequencySamples") -> "MultiFrequencySamples":
         # Concatenate list fields
